@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Image Value Posterizer</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f8f8f8;
+      text-align: center;
+      padding: 20px;
+    }
+    #controls {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px;
+    }
+    input[type="range"] {
+      width: 300px;
+    }
+    .canvas-wrapper {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      max-width: 100%;
+      overflow: auto;
+    }
+    canvas {
+      border: 1px solid #ccc;
+      max-width: 48%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>🎨 Image Value Posterizer</h2>
+
+  <div id="controls">
+    <input type="file" id="upload" accept="image/*"><br>
+
+    <label for="valueLevels">Values: <span id="valueDisplay">5</span></label>
+    <input type="range" id="valueLevels" min="2" max="11" value="5">
+
+    <label for="simplicity">Simplicity: <span id="simplicityDisplay">0</span></label>
+    <input type="range" id="simplicity" min="0" max="10" value="0">
+
+    <br><br>
+    <button id="downloadProcessed">Tải ảnh kết quả</button>
+    <button id="downloadCombined">Tải ảnh ghép (gốc + chuyển)</button>
+  </div>
+
+  <div class="canvas-wrapper">
+    <canvas id="originalCanvas"></canvas>
+    <canvas id="processedCanvas"></canvas>
+  </div>
+
+  <script>
+    const upload = document.getElementById('upload');
+    const originalCanvas = document.getElementById('originalCanvas');
+    const processedCanvas = document.getElementById('processedCanvas');
+    const originalCtx = originalCanvas.getContext('2d');
+    const processedCtx = processedCanvas.getContext('2d');
+
+    const valueSlider = document.getElementById('valueLevels');
+    const simplicitySlider = document.getElementById('simplicity');
+    const valueDisplay = document.getElementById('valueDisplay');
+    const simplicityDisplay = document.getElementById('simplicityDisplay');
+
+    const downloadProcessed = document.getElementById('downloadProcessed');
+    const downloadCombined = document.getElementById('downloadCombined');
+
+    let originalImage = null;
+    let scaleFactor = 1;
+
+    upload.addEventListener('change', handleUpload);
+    valueSlider.addEventListener('input', () => {
+      valueDisplay.textContent = valueSlider.value;
+      applyPosterize();
+    });
+    simplicitySlider.addEventListener('input', () => {
+      simplicityDisplay.textContent = simplicitySlider.value;
+      applyPosterize();
+    });
+
+    downloadProcessed.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = `Processed-value-${valueSlider.value}-simplicity-${simplicitySlider.value}.png`;
+      link.href = processedCanvas.toDataURL();
+      link.click();
+    });
+
+    downloadCombined.addEventListener('click', () => {
+      const combinedCanvas = document.createElement('canvas');
+      const width = originalCanvas.width + processedCanvas.width;
+      const height = Math.max(originalCanvas.height, processedCanvas.height);
+      combinedCanvas.width = width;
+      combinedCanvas.height = height;
+
+      const ctx = combinedCanvas.getContext('2d');
+      ctx.drawImage(originalCanvas, 0, 0);
+      ctx.drawImage(processedCanvas, originalCanvas.width, 0);
+
+      const link = document.createElement('a');
+      link.download = `Combined-value-${valueSlider.value}-simplicity-${simplicitySlider.value}.png`;
+      link.href = combinedCanvas.toDataURL();
+      link.click();
+    });
+
+    function handleUpload(e) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        const img = new Image();
+        img.onload = function() {
+          // Resize image if width > 800px
+          const maxWidth = 800;
+          scaleFactor = img.width > maxWidth ? maxWidth / img.width : 1;
+          const w = img.width * scaleFactor;
+          const h = img.height * scaleFactor;
+
+          originalCanvas.width = processedCanvas.width = w;
+          originalCanvas.height = processedCanvas.height = h;
+          originalCtx.drawImage(img, 0, 0, w, h);
+          originalImage = originalCtx.getImageData(0, 0, w, h);
+          applyPosterize();
+        };
+        img.src = event.target.result;
+      };
+      if (file) reader.readAsDataURL(file);
+    }
+
+    function applyPosterize() {
+      if (!originalImage) return;
+
+      const levels = parseInt(valueSlider.value);
+      const simplicity = parseInt(simplicitySlider.value);
+      const step = 255 / (levels - 1);
+
+      let imageData = new ImageData(
+        new Uint8ClampedArray(originalImage.data),
+        originalImage.width,
+        originalImage.height
+      );
+
+      if (simplicity > 0) {
+        imageData = blurImage(imageData, simplicity);
+      }
+
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const r = imageData.data[i];
+        const g = imageData.data[i + 1];
+        const b = imageData.data[i + 2];
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        const poster = Math.round(gray / step) * step;
+        imageData.data[i] = imageData.data[i + 1] = imageData.data[i + 2] = poster;
+        imageData.data[i + 3] = 255;
+      }
+
+      processedCtx.putImageData(imageData, 0, 0);
+    }
+
+    function blurImage(imageData, radius) {
+      const { width, height, data } = imageData;
+      const result = new Uint8ClampedArray(data.length);
+
+      const getIndex = (x, y) => (y * width + x) * 4;
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          let r = 0, g = 0, b = 0, count = 0;
+
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                const i = getIndex(nx, ny);
+                r += data[i];
+                g += data[i + 1];
+                b += data[i + 2];
+                count++;
+              }
+            }
+          }
+
+          const i = getIndex(x, y);
+          result[i] = r / count;
+          result[i + 1] = g / count;
+          result[i + 2] = b / count;
+          result[i + 3] = 255;
+        }
+      }
+
+      return new ImageData(result, width, height);
+    }
+  </script>
+</body>
+</html>
