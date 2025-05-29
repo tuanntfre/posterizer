@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Image Value Posterizer</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css" />
   <style>
     body {
       font-family: sans-serif;
@@ -34,6 +35,10 @@
       max-width: 48%;
       height: auto;
     }
+    #levelSlider {
+      margin: 20px auto;
+      width: 300px;
+    }
   </style>
 </head>
 <body>
@@ -49,6 +54,11 @@
     <label for="simplicity">Simplicity: <span id="simplicityDisplay">0</span></label>
     <input type="range" id="simplicity" min="0" max="10" value="0">
 
+    <label><input type="checkbox" id="edgeDetection"> Edge Detection (Sketch Mode)</label>
+
+    <label>Custom Levels:</label>
+    <div id="levelSlider"></div>
+
     <br><br>
     <button id="downloadProcessed">Tải ảnh kết quả</button>
     <button id="downloadCombined">Tải ảnh ghép (gốc + chuyển)</button>
@@ -59,6 +69,7 @@
     <canvas id="processedCanvas"></canvas>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
   <script>
     const upload = document.getElementById('upload');
     const originalCanvas = document.getElementById('originalCanvas');
@@ -70,22 +81,27 @@
     const simplicitySlider = document.getElementById('simplicity');
     const valueDisplay = document.getElementById('valueDisplay');
     const simplicityDisplay = document.getElementById('simplicityDisplay');
+    const edgeDetection = document.getElementById('edgeDetection');
 
     const downloadProcessed = document.getElementById('downloadProcessed');
     const downloadCombined = document.getElementById('downloadCombined');
 
     let originalImage = null;
     let scaleFactor = 1;
+    let sliderInstance = null;
+    const levelSlider = document.getElementById('levelSlider');
 
     upload.addEventListener('change', handleUpload);
     valueSlider.addEventListener('input', () => {
       valueDisplay.textContent = valueSlider.value;
+      createCustomLevelSlider(parseInt(valueSlider.value));
       applyPosterize();
     });
     simplicitySlider.addEventListener('input', () => {
       simplicityDisplay.textContent = simplicitySlider.value;
       applyPosterize();
     });
+    edgeDetection.addEventListener('change', applyPosterize);
 
     downloadProcessed.addEventListener('click', () => {
       const link = document.createElement('a');
@@ -117,7 +133,6 @@
       reader.onload = function(event) {
         const img = new Image();
         img.onload = function() {
-          // Resize image if width > 800px
           const maxWidth = 800;
           scaleFactor = img.width > maxWidth ? maxWidth / img.width : 1;
           const w = img.width * scaleFactor;
@@ -134,12 +149,37 @@
       if (file) reader.readAsDataURL(file);
     }
 
+    function createCustomLevelSlider(numLevels) {
+      if (sliderInstance) {
+        sliderInstance.destroy();
+      }
+
+      const numHandles = numLevels - 1;
+      const initial = [];
+      for (let i = 1; i < numLevels; i++) {
+        initial.push(Math.round((255 * i) / numLevels));
+      }
+
+      noUiSlider.create(levelSlider, {
+        start: initial,
+        connect: [true, ...Array(numHandles - 1).fill(true), true],
+        range: {
+          min: 0,
+          max: 255
+        },
+        step: 1,
+        tooltips: true
+      });
+
+      sliderInstance = levelSlider.noUiSlider;
+      sliderInstance.on('update', applyPosterize);
+    }
+
     function applyPosterize() {
       if (!originalImage) return;
 
-      const levels = parseInt(valueSlider.value);
       const simplicity = parseInt(simplicitySlider.value);
-      const step = 255 / (levels - 1);
+      const useEdge = edgeDetection.checked;
 
       let imageData = new ImageData(
         new Uint8ClampedArray(originalImage.data),
@@ -151,14 +191,31 @@
         imageData = blurImage(imageData, simplicity);
       }
 
-      for (let i = 0; i < imageData.data.length; i += 4) {
-        const r = imageData.data[i];
-        const g = imageData.data[i + 1];
-        const b = imageData.data[i + 2];
-        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        const poster = Math.round(gray / step) * step;
-        imageData.data[i] = imageData.data[i + 1] = imageData.data[i + 2] = poster;
-        imageData.data[i + 3] = 255;
+      if (useEdge) {
+        imageData = edgeDetect(imageData);
+      } else {
+        let customLevels = [0];
+        if (sliderInstance) {
+          customLevels = [0, ...sliderInstance.get().map(v => Math.round(Number(v))), 255];
+        }
+
+        for (let i = 0; i < imageData.data.length; i += 4) {
+          const r = imageData.data[i];
+          const g = imageData.data[i + 1];
+          const b = imageData.data[i + 2];
+          const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+
+          let level = 0;
+          for (let j = 0; j < customLevels.length - 1; j++) {
+            if (gray >= customLevels[j] && gray <= customLevels[j + 1]) {
+              level = Math.round((customLevels[j] + customLevels[j + 1]) / 2);
+              break;
+            }
+          }
+
+          imageData.data[i] = imageData.data[i + 1] = imageData.data[i + 2] = level;
+          imageData.data[i + 3] = 255;
+        }
       }
 
       processedCtx.putImageData(imageData, 0, 0);
@@ -198,6 +255,38 @@
 
       return new ImageData(result, width, height);
     }
+
+    function edgeDetect(imageData) {
+      const { width, height, data } = imageData;
+      const result = new Uint8ClampedArray(data.length);
+
+      const gray = [];
+      for (let i = 0; i < data.length; i += 4) {
+        const avg = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        gray.push(avg);
+      }
+
+      const getGray = (x, y) => {
+        if (x < 0 || x >= width || y < 0 || y >= height) return 0;
+        return gray[y * width + x];
+      };
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const gx = getGray(x+1, y) - getGray(x-1, y);
+          const gy = getGray(x, y+1) - getGray(x, y-1);
+          const magnitude = Math.sqrt(gx * gx + gy * gy);
+          const i = (y * width + x) * 4;
+          result[i] = result[i + 1] = result[i + 2] = magnitude > 20 ? 0 : 255;
+          result[i + 3] = 255;
+        }
+      }
+
+      return new ImageData(result, width, height);
+    }
+
+    // Khởi tạo ban đầu
+    createCustomLevelSlider(parseInt(valueSlider.value));
   </script>
 </body>
 </html>
